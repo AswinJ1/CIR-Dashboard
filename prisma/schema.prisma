@@ -1,0 +1,256 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DIRECT_URL")
+}
+
+model Employee {
+  id            Int      @id @default(autoincrement())
+  email         String   @unique
+  name          String
+  password      String   // Hashed password for login
+  role          Role     @default(STAFF)
+  jobTitle      String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  departmentId      Int?
+  department        Department?      @relation("DepartmentEmployees", fields: [departmentId], references: [id], onDelete: SetNull)
+  
+  subDepartmentId   Int?
+  subDepartment     SubDepartment?   @relation("SubDepartmentEmployees", fields: [subDepartmentId], references: [id], onDelete: SetNull)
+  
+  managedSubDept    SubDepartment?   @relation("SubDepartmentManager")
+  
+  createdResponsibilities Responsibility[] @relation("ResponsibilityCreator")
+  assignments             ResponsibilityAssignment[] @relation("StaffAssignments")
+  workSubmissions         WorkSubmission[] @relation("StaffSubmissions")
+  verifiedSubmissions     WorkSubmission[] @relation("ManagerVerifications")
+  notifications           Notification[]
+  comments                Comment[]
+  
+  // Track who created this Employee (for admin tracking)
+  createdById     Int?
+  createdBy       Employee?    @relation("EmployeeCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdEmployees    Employee[]   @relation("EmployeeCreator")
+
+  @@index([email])
+  @@index([role])
+  @@index([departmentId])
+  @@index([subDepartmentId])
+  @@index([isActive])
+}
+
+model Department {
+  id            Int            @id @default(autoincrement())
+  name          String         @unique
+  type          DepartmentType
+  description   String?        @db.Text
+  isActive      Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  // Relations
+  subDepartments SubDepartment[]
+  Employees          Employee[]          @relation("DepartmentEmployees")
+
+  @@index([type])
+  @@index([isActive])
+}
+
+model SubDepartment {
+  id            Int               @id @default(autoincrement())
+  name          String
+  type          SubDepartmentType
+  description   String?           @db.Text
+  isActive      Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  
+  // Relations
+  departmentId  Int
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  
+  managerId     Int?       @unique
+  manager       Employee?      @relation("SubDepartmentManager", fields: [managerId], references: [id], onDelete: SetNull)
+  
+  staff         Employee[]     @relation("SubDepartmentEmployees")
+  responsibilities Responsibility[]
+
+  @@unique([departmentId, name])
+  @@index([departmentId])
+  @@index([managerId])
+  @@index([type])
+  @@index([isActive])
+}
+
+model Responsibility {
+  id            Int      @id @default(autoincrement())
+  title         String
+  description   String?  @db.Text
+  cycle         String   // Format: "YYYY-MM" for monthly cycles
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  createdById      Int
+  createdBy        Employee          @relation("ResponsibilityCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  
+  subDepartmentId  Int
+  subDepartment    SubDepartment @relation(fields: [subDepartmentId], references: [id], onDelete: Cascade)
+  
+  // For sub-responsibilities (hierarchical structure)
+  parentId         Int?
+  parent           Responsibility?  @relation("SubResponsibilities", fields: [parentId], references: [id], onDelete: Cascade)
+  subResponsibilities Responsibility[] @relation("SubResponsibilities")
+  
+  assignments      ResponsibilityAssignment[]
+
+  @@index([subDepartmentId])
+  @@index([createdById])
+  @@index([cycle])
+  @@index([parentId])
+  @@index([isActive])
+}
+
+model ResponsibilityAssignment {
+  id              Int              @id @default(autoincrement())
+  status          AssignmentStatus @default(PENDING)
+  assignedAt      DateTime         @default(now())
+  dueDate         DateTime?        // Optional due date for the assignment
+  updatedAt       DateTime         @updatedAt
+
+  // Relations
+  responsibilityId Int
+  responsibility   Responsibility @relation(fields: [responsibilityId], references: [id], onDelete: Cascade)
+  
+  staffId          Int
+  staff            Employee           @relation("StaffAssignments", fields: [staffId], references: [id], onDelete: Cascade)
+  
+  workSubmission   WorkSubmission?
+
+  @@unique([responsibilityId, staffId])
+  @@index([staffId])
+  @@index([status])
+  @@index([responsibilityId])
+  @@index([assignedAt])
+}
+
+model WorkSubmission {
+  id              Int       @id @default(autoincrement())
+  hoursWorked     Float
+  workProofType   WorkProofType?  // Type of proof submitted
+  workProofUrl    String?         // File path/URL to uploaded proof (PDF/Image)
+  workProofText   String?   @db.Text // Direct text proof
+  staffComment    String?   @db.Text
+  managerComment  String?   @db.Text
+  submittedAt     DateTime  @default(now())
+  verifiedAt      DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  assignmentId    Int      @unique
+  assignment      ResponsibilityAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  
+  staffId         Int
+  staff           Employee     @relation("StaffSubmissions", fields: [staffId], references: [id], onDelete: Cascade)
+  
+  verifiedById    Int?
+  verifiedBy      Employee?    @relation("ManagerVerifications", fields: [verifiedById], references: [id], onDelete: SetNull)
+
+  comments        Comment[]
+
+  @@index([staffId])
+  @@index([verifiedById])
+  @@index([submittedAt])
+  @@index([verifiedAt])
+}
+
+model Comment {
+  id              Int      @id @default(autoincrement())
+  content         String   @db.Text
+  isManagerComment Boolean @default(false) // Distinguish between manager and staff comments
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  submissionId    Int
+  submission      WorkSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  
+  authorId        Int
+  author          Employee      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([authorId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        Int              @id @default(autoincrement())
+  message   String           @db.Text
+  type      NotificationType
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  // Relations
+  EmployeeId    Int
+  Employee      Employee             @relation(fields: [EmployeeId], references: [id], onDelete: Cascade)
+
+  @@index([EmployeeId, read])
+  @@index([createdAt])
+}
+
+// Enums
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+enum DepartmentType {
+  TEACHING
+  NON_TEACHING
+}
+
+enum SubDepartmentType {
+  QUANTS 
+  VERBALS
+  SOFTSKILLS
+  SKILLS 
+  ADMINISTRATION
+}
+
+enum AssignmentStatus {
+  PENDING
+  IN_PROGRESS
+  SUBMITTED
+  VERIFIED
+  REJECTED
+}
+
+enum NotificationType {
+  ASSIGNMENT_CREATED
+  WORK_SUBMITTED
+  WORK_VERIFIED
+  WORK_REJECTED
+  RESPONSIBILITY_UPDATED
+  RESPONSIBILITY_DELETED
+  PROMOTED_TO_MANAGER
+  ACCOUNT_CREATED
+}
+
+enum WorkProofType {
+  PDF
+  IMAGE
+  TEXT
+}
