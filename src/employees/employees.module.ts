@@ -4,6 +4,7 @@ import { EmployeesController } from './employees.controller';
 import { DatabaseModule } from '../database/database.module';
 @Module({
   imports:[DatabaseModule],
+  exports:[EmployeesService],
   controllers: [EmployeesController],
   providers: [EmployeesService],
 })
