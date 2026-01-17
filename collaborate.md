@@ -63,6 +63,10 @@ api/
 │   │   ├── auth.service.ts
 │   │   ├── jwt-auth.guard.ts
 │   │   ├── jwt.strategy.ts
+│   │   ├── decorators/
+│   │   │   └── roles.decorator.ts
+│   │   ├── guards/
+│   │   │   └── roles.guard.ts
 │   │   ├── dto/
 │   │   │   └── login.dto.ts
 │   │   └── entity/
@@ -154,15 +158,17 @@ api/
 ---
 
 ### 📁 `auth/`
-**Authentication Module** - JWT-based authentication system.
+**Authentication & Authorization Module** - JWT-based authentication with Role-Based Access Control (RBAC).
 
 | File | Description |
 |------|-------------|
-| `auth.service.ts` | Handles user login by validating email/password against the Employee table. Uses bcrypt for password comparison and issues JWT tokens. |
+| `auth.service.ts` | Handles user login by validating email/password against the Employee table. Uses bcrypt for password comparison and issues JWT tokens containing `userId` and `role`. |
 | `auth.controller.ts` | Exposes `/auth/login` endpoint for authentication. |
 | `auth.module.ts` | NestJS module that configures JWT with secret and expiration settings. |
-| `jwt.strategy.ts` | Passport JWT strategy for validating tokens. Extracts user from token payload. |
+| `jwt.strategy.ts` | Passport JWT strategy for validating tokens. Extracts user from token payload and returns user object with `id`, `email`, `name`, and `role`. |
 | `jwt-auth.guard.ts` | Guard to protect routes requiring authentication. |
+| `decorators/roles.decorator.ts` | Custom `@Roles()` decorator to define which roles can access specific endpoints. Uses `SetMetadata` to attach role requirements to route handlers. |
+| `guards/roles.guard.ts` | Guard that checks if the authenticated user's role matches the required roles defined by `@Roles()` decorator. Works in conjunction with `JwtAuthGuard`. |
 | `dto/login.dto.ts` | DTO with validation for email (required, valid format) and password (required, min 6 chars). |
 | `entity/auth.entity.ts` | Response entity containing `accessToken`. |
 
@@ -397,6 +403,63 @@ Employee ─────┬──── Department
 
 1. User sends POST request to `/auth/login` with email and password
 2. `AuthService` validates credentials against Employee table using bcrypt
-3. On success, JWT token is issued containing `userId`
+3. On success, JWT token is issued containing `userId` and `role`
 4. Protected routes use `@UseGuards(JwtAuthGuard)` decorator
-5. `JwtStrategy` validates token and attaches user to request
+5. `JwtStrategy` validates token and attaches user (with role) to request
+
+---
+
+## Authorization (RBAC) Flow
+
+```
+Request → JwtAuthGuard → RolesGuard → Controller
+              ↓              ↓
+         Validates      Checks if user.role
+         JWT token      matches @Roles()
+```
+
+### Role Definitions
+
+| Role | Description | Typical Permissions |
+|------|-------------|---------------------|
+| `ADMIN` | System administrator | Full access to all resources |
+| `MANAGER` | Department/Sub-department manager | Manage staff, verify work submissions |
+| `STAFF` | Regular employee | Submit work, view assigned responsibilities |
+
+### RBAC Usage Example
+
+```typescript
+@Controller('employees')
+@UseGuards(JwtAuthGuard, RolesGuard)  // Apply both guards
+export class EmployeesController {
+
+  @Post()
+  @Roles('ADMIN')  // Only ADMIN can create
+  create(@Body() dto: CreateEmployeeDto) { ... }
+
+  @Get()
+  @Roles('ADMIN', 'MANAGER')  // ADMIN and MANAGER can view all
+  findAll() { ... }
+
+  @Post('change-password')
+  // No @Roles() = any authenticated user
+  changePassword() { ... }
+}
+```
+
+### RBAC Implementation Files
+
+| File | Purpose |
+|------|---------|
+| `auth/decorators/roles.decorator.ts` | Defines `@Roles()` decorator using `SetMetadata` |
+| `auth/guards/roles.guard.ts` | Implements `CanActivate` to check user role against required roles |
+
+### Protected Endpoints by Role
+
+| Endpoint | ADMIN | MANAGER | STAFF |
+|----------|:-----:|:-------:|:-----:|
+| `POST /employees` | ✅ | ❌ | ❌ |
+| `GET /employees` | ✅ | ✅ | ❌ |
+| `PATCH /employees/:id` | ✅ | ❌ | ❌ |
+| `DELETE /employees/:id` | ✅ | ❌ | ❌ |
+| `POST /employees/change-password` | ✅ | ✅ | ✅ |

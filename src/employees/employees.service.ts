@@ -60,29 +60,29 @@ export class EmployeesService {
     })
   }
 
-  // async changePassword(userId: number, currentPassword: string, newPassword: string) {
-  //   // 1. Find the user
-  //   const user = await this.databaseService.employee.findUnique({
-  //     where: { id: userId }
-  //   });
+  async changePassword(userId: number, currentPassword: string, newPassword: string) {
+    // 1. Find the user
+    const user = await this.databaseService.employee.findUnique({
+      where: { id: userId }
+    });
 
-  //   if (!user) {
-  //     throw new NotFoundException('User not found');
-  //   }
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
 
-  //   // 2. Verify current password
-  //   const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    // 2. Verify current password
+    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
     
-  //   if (!isPasswordValid) {
-  //     throw new UnauthorizedException('Current password is incorrect');
-  //   }
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
 
-  //   // 3. Hash and save new password
-  //   const hashedPassword = await bcrypt.hash(newPassword, roundsOfHashing);
+    // 3. Hash and save new password
+    const hashedPassword = await bcrypt.hash(newPassword, roundsOfHashing);
     
-  //   return this.databaseService.employee.update({
-  //     where: { id: userId },
-  //     data: { password: hashedPassword }
-  //   });
-  // }
+    return this.databaseService.employee.update({
+      where: { id: userId },
+      data: { password: hashedPassword }
+    });
+  }
 }
