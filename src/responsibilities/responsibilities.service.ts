@@ -28,11 +28,7 @@ export class ResponsibilitiesService {
   ) {
     // Staff creating their own responsibility
     if (userRole === 'STAFF') {
-      if (!isStaffCreated) {
-        throw new ForbiddenException('Staff can only create responsibilities for themselves');
-      }
-      
-      // Staff can only create for today
+      // Staff can ONLY create for themselves - automatically set isStaffCreated
       const today = this.getDateOnly(new Date());
       const start = startDate ? this.getDateOnly(new Date(startDate)) : today;
       const end = endDate ? this.getDateOnly(new Date(endDate)) : today;
@@ -44,7 +40,7 @@ export class ResponsibilitiesService {
       // Auto-set dates to today for staff-created responsibilities
       (createResponsibilityDto as any).startDate = today;
       (createResponsibilityDto as any).endDate = today;
-      (createResponsibilityDto as any).isStaffCreated = true;
+      (createResponsibilityDto as any).isStaffCreated = true;  // Always true for staff
     }
 
     // Manager/Admin setting date range

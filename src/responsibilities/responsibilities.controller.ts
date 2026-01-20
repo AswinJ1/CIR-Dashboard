@@ -101,7 +101,7 @@ export class ResponsibilitiesController {
   }
 
   @Delete(':id')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'MANAGER')  // ← Add MANAGER here
   remove(@Param('id') id: string) {
     return this.responsibilitiesService.remove(+id);
   }
