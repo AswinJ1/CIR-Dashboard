@@ -42,8 +42,10 @@ export class WorkSubmissionController {
     @Query('staffId') staffId?: string,
     @Query('verifiedById') verifiedById?: string,
     @Query('assignmentId') assignmentId?: string,
+    @Query('date') dateStr?: string,
     @Request() req?,
   ) {
+    const dateFilter = dateStr ? new Date(dateStr) : undefined;
     return this.workSubmissionService.findAllScoped(
       req.user.id,
       req.user.role,
@@ -51,7 +53,92 @@ export class WorkSubmissionController {
       staffId ? +staffId : undefined,
       verifiedById ? +verifiedById : undefined,
       assignmentId ? +assignmentId : undefined,
+      dateFilter,
     );
+  }
+
+  /**
+   * Get today's submissions for current user (convenience endpoint)
+   */
+  @Get('today')
+  @Roles('ADMIN', 'MANAGER', 'STAFF')
+  async getToday(@Request() req) {
+    return this.workSubmissionService.getDailySubmissions(
+      req.user.id,
+      req.user.role,
+      req.user.subDepartmentId,
+      new Date(),
+    );
+  }
+
+  /**
+   * Get submissions for a specific date
+   */
+  @Get('daily/:date')
+  @Roles('ADMIN', 'MANAGER', 'STAFF')
+  async getDailySubmissions(
+    @Param('date') dateStr: string,
+    @Request() req,
+  ) {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) {
+      throw new Error('Invalid date format. Use YYYY-MM-DD');
+    }
+    return this.workSubmissionService.getDailySubmissions(
+      req.user.id,
+      req.user.role,
+      req.user.subDepartmentId,
+      date,
+    );
+  }
+
+  /**
+   * Get daily hours summary (verified vs pending)
+   */
+  @Get('daily-hours/:staffId/:date')
+  @Roles('ADMIN', 'MANAGER', 'STAFF')
+  async getDailyHours(
+    @Param('staffId', ParseIntPipe) staffId: number,
+    @Param('date') dateStr: string,
+    @Request() req,
+  ) {
+    // Staff can only see their own hours
+    if (req.user.role === 'STAFF' && req.user.id !== staffId) {
+      throw new Error('Staff can only view their own daily hours');
+    }
+    
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) {
+      throw new Error('Invalid date format. Use YYYY-MM-DD');
+    }
+    
+    return this.workSubmissionService.getDailyTotalHours(staffId, date);
+  }
+
+  /**
+   * Get calendar view for date range
+   */
+  @Get('calendar/:staffId')
+  @Roles('ADMIN', 'MANAGER', 'STAFF')
+  async getCalendarView(
+    @Param('staffId', ParseIntPipe) staffId: number,
+    @Query('startDate') startDateStr: string,
+    @Query('endDate') endDateStr: string,
+    @Request() req,
+  ) {
+    // Staff can only see their own calendar
+    if (req.user.role === 'STAFF' && req.user.id !== staffId) {
+      throw new Error('Staff can only view their own calendar');
+    }
+    
+    const startDate = new Date(startDateStr);
+    const endDate = new Date(endDateStr);
+    
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      throw new Error('Invalid date format. Use YYYY-MM-DD');
+    }
+    
+    return this.workSubmissionService.getCalendarView(staffId, startDate, endDate);
   }
 
   @Get(':id')

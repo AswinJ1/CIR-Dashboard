@@ -6,6 +6,31 @@ import { DatabaseService } from 'src/database/database.service';
 export class WorkSubmissionService {
   constructor(private readonly databaseService: DatabaseService) {}
 
+  /**
+   * Helper: Get date only (strip time component) in UTC
+   */
+  private getDateOnly(date: Date): Date {
+    const d = new Date(date);
+    d.setUTCHours(0, 0, 0, 0);
+    return d;
+  }
+
+  /**
+   * Helper: Get today's date only (UTC)
+   */
+  private getTodayDateOnly(): Date {
+    return this.getDateOnly(new Date());
+  }
+
+  /**
+   * Helper: Check if two dates are the same day
+   */
+  private isSameDay(date1: Date, date2: Date): boolean {
+    const d1 = this.getDateOnly(date1);
+    const d2 = this.getDateOnly(date2);
+    return d1.getTime() === d2.getTime();
+  }
+
   async create(createWorkSubmissionDto: Prisma.WorkSubmissionCreateInput) {
     try {
       return await this.databaseService.workSubmission.create({
@@ -20,7 +45,7 @@ export class WorkSubmissionService {
         }
         if (error.code === 'P2002') {
           throw new BadRequestException(
-            'A work submission already exists for this assignment.',
+            'A work submission already exists for this assignment on this date.',
           );
         }
       }
@@ -154,7 +179,7 @@ export class WorkSubmissionService {
   }
 
   /**
-   * Scoped findAll - restricts data based on user role
+   * Scoped findAll - restricts data based on user role and date filtering
    */
   async findAllScoped(
     userId: number,
@@ -163,8 +188,14 @@ export class WorkSubmissionService {
     staffId?: number,
     verifiedById?: number,
     assignmentId?: number,
+    dateFilter?: Date,
   ) {
     const where: any = {};
+
+    // Date filtering
+    if (dateFilter) {
+      where.workDate = this.getDateOnly(dateFilter);
+    }
 
     // STAFF: Only their own submissions
     if (userRole === 'STAFF') {
@@ -213,6 +244,9 @@ export class WorkSubmissionService {
             email: true,
           },
         },
+      },
+      orderBy: {
+        workDate: 'desc',
       },
     });
   }
@@ -330,7 +364,7 @@ export class WorkSubmissionService {
   }
 
   /**
-   * Protected create - ensures staff can only submit their own work
+   * Protected create - ensures staff can only submit their own work for CURRENT DATE only
    */
   async createProtected(
     createWorkSubmissionDto: Prisma.WorkSubmissionCreateInput,
@@ -365,6 +399,9 @@ export class WorkSubmissionService {
 
     const assignment = await this.databaseService.responsibilityAssignment.findUnique({
       where: { id: assignmentId },
+      include: {
+        responsibility: true,
+      },
     });
 
     if (!assignment) {
@@ -375,16 +412,219 @@ export class WorkSubmissionService {
       throw new ForbiddenException('Cannot submit work for an assignment not assigned to this staff');
     }
 
-    // 5. Check if submission already exists for this assignment
+    // 5. Validate workDate - must be current date only (no backdating or future dating)
+    const today = this.getTodayDateOnly();
+    const workDate = createWorkSubmissionDto.workDate 
+      ? this.getDateOnly(new Date(createWorkSubmissionDto.workDate as string | Date))
+      : today;
+
+    if (!this.isSameDay(workDate, today)) {
+      throw new BadRequestException(
+        'Work submissions can only be made for the current date. Backdated and future-dated submissions are not allowed.',
+      );
+    }
+
+    // 6. Check if responsibility is active for this date
+    const responsibility = assignment.responsibility;
+    if (responsibility) {
+      const startDate = responsibility.startDate ? this.getDateOnly(responsibility.startDate) : null;
+      const endDate = responsibility.endDate ? this.getDateOnly(responsibility.endDate) : null;
+
+      if (startDate && today < startDate) {
+        throw new BadRequestException('This responsibility has not started yet');
+      }
+      if (endDate && today > endDate) {
+        throw new BadRequestException('This responsibility has expired and is no longer active');
+      }
+    }
+
+    // 7. Check if submission already exists for this assignment on this date
     const existingSubmission = await this.databaseService.workSubmission.findFirst({
-      where: { assignmentId },
+      where: { 
+        assignmentId,
+        workDate: today,
+      },
     });
 
     if (existingSubmission) {
-      throw new BadRequestException('Work submission already exists for this assignment. Use update instead.');
+      throw new BadRequestException(
+        'Work submission already exists for this assignment today. Use update instead.',
+      );
     }
 
-    // 6. Create the submission
-    return this.create(createWorkSubmissionDto);
+    // 8. Create the submission with workDate set to today
+    return this.create({
+      ...createWorkSubmissionDto,
+      workDate: today,
+    });
+  }
+
+  /**
+   * Get daily submissions for a specific date (with scoping)
+   */
+  async getDailySubmissions(
+    userId: number,
+    userRole: string,
+    userSubDepartmentId: number | null,
+    date: Date,
+  ) {
+    const targetDate = this.getDateOnly(date);
+    const where: any = {
+      workDate: targetDate,
+    };
+
+    // Apply role-based scoping
+    if (userRole === 'STAFF') {
+      where.staffId = userId;
+    } else if (userRole === 'MANAGER') {
+      if (!userSubDepartmentId) {
+        return [];
+      }
+      where.assignment = {
+        responsibility: {
+          subDepartmentId: userSubDepartmentId,
+        },
+      };
+    }
+    // ADMIN: No restrictions
+
+    return this.databaseService.workSubmission.findMany({
+      where,
+      include: {
+        assignment: {
+          include: {
+            responsibility: true,
+          },
+        },
+        staff: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        },
+        verifiedBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Calculate daily total hours from VERIFIED submissions only
+   */
+  async getDailyTotalHours(
+    staffId: number,
+    date: Date,
+  ): Promise<{ totalHours: number; verifiedHours: number; pendingHours: number }> {
+    const targetDate = this.getDateOnly(date);
+
+    const submissions = await this.databaseService.workSubmission.findMany({
+      where: {
+        staffId,
+        workDate: targetDate,
+      },
+      include: {
+        assignment: true,
+      },
+    });
+
+    let verifiedHours = 0;
+    let pendingHours = 0;
+
+    for (const submission of submissions) {
+      const hours = submission.hoursWorked || 0;
+      if (submission.verifiedAt) {
+        // Check assignment status for approved vs rejected
+        const assignment = submission.assignment;
+        if (assignment?.status === 'VERIFIED') {
+          verifiedHours += hours;
+        }
+        // Rejected submissions don't count towards any total
+      } else {
+        pendingHours += hours;
+      }
+    }
+
+    return {
+      totalHours: verifiedHours + pendingHours,
+      verifiedHours,
+      pendingHours,
+    };
+  }
+
+  /**
+   * Check if a past date is locked (missed day - cannot submit)
+   */
+  isDateLocked(date: Date): boolean {
+    const today = this.getTodayDateOnly();
+    const targetDate = this.getDateOnly(date);
+    return targetDate < today;
+  }
+
+  /**
+   * Get calendar view for a date range (staff's submissions with status)
+   */
+  async getCalendarView(
+    staffId: number,
+    startDate: Date,
+    endDate: Date,
+  ) {
+    const start = this.getDateOnly(startDate);
+    const end = this.getDateOnly(endDate);
+
+    const submissions = await this.databaseService.workSubmission.findMany({
+      where: {
+        staffId,
+        workDate: {
+          gte: start,
+          lte: end,
+        },
+      },
+      include: {
+        assignment: true,
+      },
+      orderBy: {
+        workDate: 'asc',
+      },
+    });
+
+    // Group by date
+    const calendarData: Record<string, {
+      date: string;
+      submissions: any[];
+      totalHours: number;
+      verifiedHours: number;
+      isLocked: boolean;
+    }> = {};
+
+    for (const submission of submissions) {
+      const dateKey = submission.workDate.toISOString().split('T')[0];
+      
+      if (!calendarData[dateKey]) {
+        calendarData[dateKey] = {
+          date: dateKey,
+          submissions: [],
+          totalHours: 0,
+          verifiedHours: 0,
+          isLocked: this.isDateLocked(submission.workDate),
+        };
+      }
+
+      const hours = submission.hoursWorked || 0;
+      calendarData[dateKey].submissions.push(submission);
+      calendarData[dateKey].totalHours += hours;
+      
+      if (submission.verifiedAt && submission.assignment?.status === 'VERIFIED') {
+        calendarData[dateKey].verifiedHours += hours;
+      }
+    }
+
+    return Object.values(calendarData);
   }
 }

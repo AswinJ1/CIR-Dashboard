@@ -101,6 +101,13 @@ model Responsibility {
   isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  
+  // Date range for visibility (staff can only see between these dates)
+  startDate     DateTime?  // When responsibility becomes visible to staff
+  endDate       DateTime?  // When responsibility expires and becomes hidden from staff
+  
+  // Allow staff to create their own daily responsibilities
+  isStaffCreated  Boolean  @default(false)  // True if created by staff for themselves
 
   // Relations
   createdById      Int
@@ -121,6 +128,8 @@ model Responsibility {
   @@index([cycle])
   @@index([parentId])
   @@index([isActive])
+  @@index([startDate])
+  @@index([endDate])
 }
 
 model ResponsibilityAssignment {
@@ -148,6 +157,7 @@ model ResponsibilityAssignment {
 
 model WorkSubmission {
   id              Int       @id @default(autoincrement())
+  workDate        DateTime  @default(now()) @db.Date  // The date this work was performed (DATE only, no time)
   hoursWorked     Float
   workProofType   WorkProofType?  // Type of proof submitted
   workProofUrl    String?         // File path/URL to uploaded proof (PDF/Image)
@@ -170,10 +180,14 @@ model WorkSubmission {
 
   comments        Comment[]
 
+  // Note: assignmentId is @unique, so only one submission per assignment.
+  // workDate + staffId index helps with daily queries.
+  @@index([staffId, workDate])  // For daily lookup per staff
   @@index([staffId])
   @@index([verifiedById])
   @@index([submittedAt])
   @@index([verifiedAt])
+  @@index([workDate])
 }
 
 model Comment {

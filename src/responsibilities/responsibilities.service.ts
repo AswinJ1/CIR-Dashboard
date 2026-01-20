@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { Prisma, SubDepartmentType } from '@prisma/client';
 import { DatabaseService } from 'src/database/database.service';
 
@@ -10,6 +10,60 @@ export class ResponsibilitiesService {
     return this.databaseService.responsibility.create({
       data: createResponsibilityDto,
     });
+  }
+
+  /**
+   * Create a responsibility with date validation
+   * Managers can set startDate and endDate
+   * Staff can create same-day responsibilities for themselves (if enabled)
+   */
+  async createWithDateValidation(
+    createResponsibilityDto: Prisma.ResponsibilityCreateInput,
+    userId: number,
+    userRole: string,
+    userSubDepartmentId: number | null,
+    startDate?: Date,
+    endDate?: Date,
+    isStaffCreated?: boolean,
+  ) {
+    // Staff creating their own responsibility
+    if (userRole === 'STAFF') {
+      if (!isStaffCreated) {
+        throw new ForbiddenException('Staff can only create responsibilities for themselves');
+      }
+      
+      // Staff can only create for today
+      const today = this.getDateOnly(new Date());
+      const start = startDate ? this.getDateOnly(new Date(startDate)) : today;
+      const end = endDate ? this.getDateOnly(new Date(endDate)) : today;
+      
+      if (start.getTime() !== today.getTime() || end.getTime() !== today.getTime()) {
+        throw new BadRequestException('Staff can only create responsibilities for the current day');
+      }
+      
+      // Auto-set dates to today for staff-created responsibilities
+      (createResponsibilityDto as any).startDate = today;
+      (createResponsibilityDto as any).endDate = today;
+      (createResponsibilityDto as any).isStaffCreated = true;
+    }
+
+    // Manager/Admin setting date range
+    if (userRole === 'MANAGER' || userRole === 'ADMIN') {
+      if (startDate && endDate) {
+        const start = this.getDateOnly(new Date(startDate));
+        const end = this.getDateOnly(new Date(endDate));
+        
+        if (end < start) {
+          throw new BadRequestException('End date cannot be before start date');
+        }
+        
+        (createResponsibilityDto as any).startDate = start;
+        (createResponsibilityDto as any).endDate = end;
+      }
+      (createResponsibilityDto as any).isStaffCreated = false;
+    }
+
+    return this.create(createResponsibilityDto);
   }
 
   // Filter responsibilities by SubDepartment type
@@ -143,21 +197,43 @@ export class ResponsibilitiesService {
 
   /**
    * Scoped findAll - restricts based on user role
+   * Staff can only see responsibilities that are:
+   * 1. Assigned to them
+   * 2. Within the valid date range (between startDate and endDate)
+   * 3. Active
+   * 
+   * Managers/Admins can see all responsibilities including expired ones
    */
   async findAllScoped(
     userId: number,
     userRole: string,
     userSubDepartmentId: number | null,
+    includeExpired?: boolean,  // For managers/admins to see expired
   ) {
     const where: any = {};
+    const today = this.getDateOnly(new Date());
 
-    // STAFF: Only responsibilities assigned to them
+    // STAFF: Only responsibilities assigned to them AND within valid date range
     if (userRole === 'STAFF') {
       where.assignments = {
         some: {
           staffId: userId,
         },
       };
+      where.isActive = true;
+      
+      // Only show responsibilities within date range for staff
+      where.OR = [
+        // No dates set (legacy responsibilities)
+        { startDate: null, endDate: null },
+        // Within date range
+        {
+          AND: [
+            { OR: [{ startDate: null }, { startDate: { lte: today } }] },
+            { OR: [{ endDate: null }, { endDate: { gte: today } }] },
+          ],
+        },
+      ];
     }
 
     // MANAGER: Only their sub-department responsibilities
@@ -166,9 +242,17 @@ export class ResponsibilitiesService {
         return [];
       }
       where.subDepartmentId = userSubDepartmentId;
+      
+      // Optionally exclude expired unless explicitly requested
+      if (!includeExpired) {
+        where.OR = [
+          { endDate: null },
+          { endDate: { gte: today } },
+        ];
+      }
     }
 
-    // ADMIN: No restrictions
+    // ADMIN: No restrictions (can see all including expired)
 
     return this.databaseService.responsibility.findMany({
       where,
@@ -195,5 +279,121 @@ export class ResponsibilitiesService {
         },
       },
     });
+  }
+
+  /**
+   * Get active responsibilities for a specific date
+   * Used for daily submission workflow
+   */
+  async getActiveForDate(
+    userId: number,
+    userRole: string,
+    userSubDepartmentId: number | null,
+    date: Date,
+  ) {
+    const targetDate = this.getDateOnly(date);
+    const where: any = {
+      isActive: true,
+      OR: [
+        // No dates set (always visible)
+        { startDate: null, endDate: null },
+        // Within date range
+        {
+          AND: [
+            { OR: [{ startDate: null }, { startDate: { lte: targetDate } }] },
+            { OR: [{ endDate: null }, { endDate: { gte: targetDate } }] },
+          ],
+        },
+      ],
+    };
+
+    if (userRole === 'STAFF') {
+      where.assignments = {
+        some: {
+          staffId: userId,
+        },
+      };
+    }
+
+    if (userRole === 'MANAGER') {
+      if (!userSubDepartmentId) return [];
+      where.subDepartmentId = userSubDepartmentId;
+    }
+
+    return this.databaseService.responsibility.findMany({
+      where,
+      include: {
+        subDepartment: true,
+        assignments: {
+          where: userRole === 'STAFF' ? { staffId: userId } : undefined,
+          include: {
+            staff: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
+              },
+            },
+            workSubmission: true,
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Check if a responsibility is visible to a user on a specific date
+   */
+  async isVisibleToUser(
+    responsibilityId: number,
+    userId: number,
+    userRole: string,
+    date: Date,
+  ): Promise<boolean> {
+    const responsibility = await this.databaseService.responsibility.findUnique({
+      where: { id: responsibilityId },
+      include: {
+        assignments: {
+          where: { staffId: userId },
+        },
+      },
+    });
+
+    if (!responsibility || !responsibility.isActive) {
+      return false;
+    }
+
+    // Admin/Manager can always see
+    if (userRole === 'ADMIN' || userRole === 'MANAGER') {
+      return true;
+    }
+
+    // Staff must be assigned
+    if (responsibility.assignments.length === 0) {
+      return false;
+    }
+
+    // Check date range for staff
+    const targetDate = this.getDateOnly(date);
+    
+    if (responsibility.startDate && targetDate < this.getDateOnly(responsibility.startDate)) {
+      return false;
+    }
+    
+    if (responsibility.endDate && targetDate > this.getDateOnly(responsibility.endDate)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Helper: Get date only (strip time component)
+   */
+  private getDateOnly(date: Date): Date {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
   }
 }
