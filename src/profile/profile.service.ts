@@ -32,12 +32,18 @@ export class ProfileService {
     }
 
     async updateAvatar(userId: number, dto: UpdateAvatarDto) {
+        // Build update data, only include gender if provided
+        const updateData: any = {
+            avatarUrl: dto.avatarUrl,
+        };
+
+        if (dto.gender) {
+            updateData.gender = dto.gender.toUpperCase() as 'MALE' | 'FEMALE';
+        }
+
         const updated = await this.databaseService.employee.update({
             where: { id: userId },
-            data: {
-                avatarUrl: dto.avatarUrl,
-                gender: dto.gender?.toUpperCase() as 'MALE' | 'FEMALE',
-            },
+            data: updateData,
             select: {
                 id: true,
                 avatarUrl: true,
