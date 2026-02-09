@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { DatabaseService } from 'src/database/database.service';
-import * as bcrypt from 'bcrypt';
+import * as bcrypt from 'bcryptjs';
 export const roundsOfHashing = 10;
 
 @Injectable()
